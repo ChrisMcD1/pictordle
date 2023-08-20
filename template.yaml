@@ -1,20 +1,116 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: Pictordle Stack
 
+Parameters:
+  AppServerECRImage:
+    Type: String
+    Description: The URL to the image for the app server
+    Default: 101357155028.dkr.ecr.us-east-1.amazonaws.com/pictordle:latest
+
 Resources:
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+
+  Subnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.0.0.0/24
+
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: ECS Security Group
+      VpcId: !Ref Vpc
+
+
   PostsTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: FunNewName
+      TableName: PostsTable
       AttributeDefinitions:
-        - AttributeName: Title
+        - AttributeName: User
           AttributeType: S
       KeySchema:
-        - AttributeName: Title
+        - AttributeName: User
           KeyType: HASH
       ProvisionedThroughput:
         ReadCapacityUnits: 5
         WriteCapacityUnits: 5
+
+  AppServerTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: PictordleAppServer
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - EC2
+      Cpu: 1024
+      Memory: 1024
+      ExecutionRoleArn: !GetAtt AppServerEC2Role.Arn
+      ContainerDefinitions:
+        - Name: AppServer
+          Image: !Ref AppServerECRImage
+          Cpu: 1024
+          Memory: 1024
+          Essential: true
+          Environment:
+            - Name: PORT
+              Value: 80
+            - Name: POST_TABLE_NAME
+              Value: !Ref PostsTable
+          PortMappings:
+            - ContainerPort: 80
+              HostPort: 80
+
+  MyECSCluster:
+    Type: AWS::ECS::Cluster
+
+  AppServerService:
+    Type: AWS::ECS::Service
+    Properties: 
+      Cluster: !Ref MyECSCluster
+      TaskDefinition: !Ref AppServerTaskDefinition
+      LaunchType: EC2
+      DesiredCount: 1
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets:
+            - !Ref Subnet
+          SecurityGroups:
+            - !Ref SecurityGroup
+
+
+  AppServerEC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: PictordleAppServerRole
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal: 
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: PostsTableAccessPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement: 
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:BatchGetItem
+                  - dynamodb:BatchWriteItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                Resource:
+                  - !GetAtt PostsTable.Arn
 
 Outputs:
   PostTableARN:

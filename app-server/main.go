@@ -11,36 +11,39 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"time"
 )
 
 func main() {
 	fmt.Println("hello world")
 	httpPort := os.Getenv("PORT")
-	if httpPort == "" {
-		httpPort = "8080"
-	}
 	http.HandleFunc("/", RootPath)
 
 	http.ListenAndServe(":"+httpPort, nil)
 }
 
-type Book struct {
-	Title  string
-	Author string
+type Post struct {
+	User           string
+	Day            time.Time
+	Interpretation string
 }
 
 func RootPath(w http.ResponseWriter, r *http.Request) {
 	sess := session.Must(session.NewSession())
 	svc := dynamodb.New(sess)
 
-	book := Book{"My first book", "Christopher McDonenll"}
+	book := Post{
+		User:           "Test-123",
+		Day:            time.Now(),
+		Interpretation: "I see some cool clouds",
+	}
 
 	av, err := dynamodbattribute.MarshalMap(book)
 	if err != nil {
 		log.Fatalf("Got error marshalleling my new book %s", err)
 	}
 
-	tableName := "Books"
+	tableName := os.Getenv("POST_TABLE_NAME")
 
 	input := &dynamodb.PutItemInput{
 		Item:      av,
