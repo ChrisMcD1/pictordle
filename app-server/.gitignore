@@ -1,0 +1,11 @@
+*.exe
+*.o
+*.out
+
+# Go specific
+/bin/
+/vendor/
+/go.sum
+
+
+pictordle-server

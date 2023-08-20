@@ -1,0 +1,22 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Pictordle Stack
+
+Resources:
+  PostsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: FunNewName
+      AttributeDefinitions:
+        - AttributeName: Title
+          AttributeType: S
+      KeySchema:
+        - AttributeName: Title
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+
+Outputs:
+  PostTableARN:
+    Description: The ARN of the new table
+    Value: !GetAtt PostsTable.Arn
