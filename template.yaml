@@ -6,6 +6,10 @@ Parameters:
     Type: String
     Description: The URL to the image for the app server
     Default: 101357155028.dkr.ecr.us-east-1.amazonaws.com/pictordle:latest
+  LatestECSOptimizedAMI:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Description: AMI ID
+    Default: "/aws/service/ecs/optimized-ami/amazon-linux-2/recommended/image_id"
 
 Resources:
   Vpc:
@@ -68,20 +72,74 @@ Resources:
   MyECSCluster:
     Type: AWS::ECS::Cluster
 
+  MyInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref AppServerEC2Role
+
+  ECSLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        ImageId: !Ref LatestECSOptimizedAMI
+        InstanceType: t2.micro
+        IamInstanceProfile:
+          Arn: !GetAtt MyInstanceProfile.Arn
+        UserData: 
+          Fn::Base64: !Sub |
+            #!/bin/bash -xe
+            echo ECS_CLUSTER=${MyECSCluster} >> /etc/ecs/ecs.config
+            yum install -y aws-cfn-bootstrap
+            /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource EC2AutoScalingGroup --region ${AWS::Region}
+
+  ECSAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      MinSize: 1
+      MaxSize: 1
+      AvailabilityZones:
+        - us-east-1a
+        - us-east-1b
+        - us-east-1c
+      LaunchTemplate:
+        LaunchTemplateId: !Ref ECSLaunchTemplate
+        Version: !GetAtt ECSLaunchTemplate.LatestVersionNumber
+
+  EC2CapacityProvider:
+    Type: AWS::ECS::CapacityProvider
+    Properties:
+      AutoScalingGroupProvider:
+        AutoScalingGroupArn: !Ref ECSAutoScalingGroup
+
+  ClusterCPAssocation:
+    Type: AWS::ECS::ClusterCapacityProviderAssociations
+    Properties:
+      Cluster: !Ref MyECSCluster
+      CapacityProviders:
+        - !Ref EC2CapacityProvider
+      DefaultCapacityProviderStrategy:
+        - CapacityProvider: !Ref EC2CapacityProvider
+          Weight: 1
+
   AppServerService:
     Type: AWS::ECS::Service
     Properties: 
       Cluster: !Ref MyECSCluster
       TaskDefinition: !Ref AppServerTaskDefinition
-      LaunchType: EC2
       DesiredCount: 1
+      DeploymentConfiguration:
+        MaximumPercent: 100
+        MinimumHealthyPercent: 0
+      CapacityProviderStrategy:
+        - CapacityProvider: !Ref EC2CapacityProvider
+          Weight: 1
       NetworkConfiguration:
         AwsvpcConfiguration:
           Subnets:
             - !Ref Subnet
           SecurityGroups:
             - !Ref SecurityGroup
-
 
   AppServerEC2Role:
     Type: AWS::IAM::Role
@@ -111,6 +169,14 @@ Resources:
                   - dynamodb:Scan
                 Resource:
                   - !GetAtt PostsTable.Arn
+        - PolicyName: ConnectToECSPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement: 
+              - Effect: Allow
+                Action:
+                  - ecs:*
+                Resource: '*'
 
 Outputs:
   PostTableARN:
