@@ -245,26 +245,6 @@ Resources:
               - |2
                  >> /etc/ecs/ecs.config
                 
-  ServiceScalingTarget:
-    Type: AWS::ApplicationAutoScaling::ScalableTarget
-    DependsOn: AppServerService
-    Properties:
-      MaxCapacity: 1
-      MinCapacity: 1
-      ResourceId: !Join
-        - ''
-        - - service/
-          - !Ref ECSCluster
-          - / 
-          - !GetAtt
-            - AppServerService
-            - Name
-      RoleArn: !GetAtt
-        - AutoscalingRole
-        - Arn
-      ScalableDimension: 'ecs:service:DesiredCount'
-      ServiceNamespace: ecs
-
   AppServerService:
     Type: AWS::ECS::Service
     DependsOn: ALBListener
