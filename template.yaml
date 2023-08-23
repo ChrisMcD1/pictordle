@@ -9,56 +9,131 @@ Parameters:
   LatestECSOptimizedAMI:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Description: AMI ID
-    Default: "/aws/service/ecs/optimized-ami/amazon-linux-2/recommended/image_id"
+    Default: /aws/service/ecs/optimized-ami/amazon-linux-2/recommended/image_id
 
 Resources:
   Vpc:
     Type: AWS::EC2::VPC
     Properties:
       CidrBlock: 10.0.0.0/16
-
-  Subnet:
-    Type: AWS::EC2::Subnet
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties: 
+      VpcId: !Ref Vpc
+  InternetRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+  AssociateRouteTableA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref SubnetA
+      RouteTableId: !Ref RouteTable
+  AssociateRouteTableB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref SubnetB
+      RouteTableId: !Ref RouteTable
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
     Properties:
       VpcId: !Ref Vpc
-      CidrBlock: 10.0.0.0/24
+      InternetGatewayId: !Ref InternetGateway
 
-  SecurityGroup:
+  SubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: us-east-1a
+      VpcId: !Ref Vpc
+      CidrBlock: 10.0.0.0/24
+      MapPublicIpOnLaunch: true
+        #  NatEIPA:
+        #    Type: AWS::EC2::EIP
+        #    Properties:
+        #      Domain: vpc
+        #  NatGatewayA:
+        #    Type: AWS::EC2::NatGateway
+        #    Properties:
+        #      AllocationId: !GetAtt NatEIPA.AllocationId
+        #      SubnetId: !Ref SubnetA
+
+  SubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: us-east-1b
+      VpcId: !Ref Vpc
+      CidrBlock: 10.0.1.0/24
+      MapPublicIpOnLaunch: true
+        #  NatEIPB:
+        #    Type: AWS::EC2::EIP
+        #    Properties:
+        #      Domain: vpc
+        #  NatGatewayB:
+        #    Type: AWS::EC2::NatGateway
+        #    Properties:
+        #      AllocationId: !GetAtt NatEIPB.AllocationId
+        #      SubnetId: !Ref SubnetB
+
+  EcsSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupDescription: ECS Security Group
       VpcId: !Ref Vpc
 
-
-  PostsTable:
-    Type: AWS::DynamoDB::Table
+  EcsSecurityGroupHTTPInbound:
+    Type: AWS::EC2::SecurityGroupIngress
     Properties:
-      TableName: PostsTable
-      AttributeDefinitions:
-        - AttributeName: User
-          AttributeType: S
-      KeySchema:
-        - AttributeName: User
-          KeyType: HASH
-      ProvisionedThroughput:
-        ReadCapacityUnits: 5
-        WriteCapacityUnits: 5
+      GroupId: !Ref EcsSecurityGroup
+      IpProtocol: tcp
+      FromPort: 80
+      ToPort: 80
+      CidrIp: 0.0.0.0/0
+  EcsSecurityGroupSSHInbound:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref EcsSecurityGroup
+      IpProtocol: tcp
+      FromPort: 22
+      ToPort: 22
+      CidrIp: 0.0.0.0/0
+  EcsSecurityGroupALBPorts:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref EcsSecurityGroup
+      IpProtocol: tcp
+      FromPort: 31000
+      ToPort: 61000
+      SourceSecurityGroupId: !Ref EcsSecurityGroup
+  CloudwatchLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Join
+        - '-'
+        - - ECSLogGroup
+          - !Ref AWS::StackName
+      RetentionInDays: 14
 
   AppServerTaskDefinition:
     Type: AWS::ECS::TaskDefinition
     Properties:
-      Family: PictordleAppServer
-      NetworkMode: awsvpc
-      RequiresCompatibilities:
-        - EC2
-      Cpu: 1024
-      Memory: 1024
-      ExecutionRoleArn: !GetAtt AppServerEC2Role.Arn
+      Family: !Join
+        - ''
+        - - !Ref AWS::StackName
+          - PictordleAppServer
+      Cpu: 512
+      Memory: 512
       ContainerDefinitions:
         - Name: AppServer
           Image: !Ref AppServerECRImage
-          Cpu: 1024
-          Memory: 1024
+          Cpu: 512
+          Memory: 512
           Essential: true
           Environment:
             - Name: PORT
@@ -69,14 +144,84 @@ Resources:
             - ContainerPort: 80
               HostPort: 80
 
-  MyECSCluster:
+  ECSALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    DependsOn: AttachGateway
+    Properties:
+      Name: ECSALB
+      Scheme: internet-facing
+      LoadBalancerAttributes:
+        - Key: idle_timeout.timeout_seconds
+          Value: '30'
+      Subnets: 
+        - !Ref SubnetA
+        - !Ref SubnetB
+      SecurityGroups:
+        - !Ref EcsSecurityGroup
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    DependsOn: ECSServiceRole
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ECSTargetGroup
+      LoadBalancerArn: !Ref ECSALB
+      Port: 80
+      Protocol: HTTP
+  ECSALBListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    DependsOn: ALBListener
+    Properties:
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref ECSTargetGroup
+      Conditions:
+        - Field: path-pattern
+          Values:
+            - /
+      ListenerArn: !Ref ALBListener
+      Priority: 1
+  ECSTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    DependsOn: ECSALB
+    Properties:
+      HealthCheckIntervalSeconds: 10
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      Name: ECSTargetGroup
+      Port: 80
+      Protocol: HTTP
+      UnhealthyThresholdCount: 2
+      VpcId: !Ref Vpc
+
+  ECSCluster:
     Type: AWS::ECS::Cluster
 
-  MyInstanceProfile:
+  Ec2InstanceProfile:
     Type: AWS::IAM::InstanceProfile
     Properties:
       Roles:
         - !Ref AppServerEC2Role
+
+  ECSAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier: 
+        - !Ref SubnetA
+        - !Ref SubnetB
+      LaunchTemplate:
+        LaunchTemplateId: !Ref ECSLaunchTemplate
+        Version: !GetAtt ECSLaunchTemplate.LatestVersionNumber
+      MinSize: 1
+      MaxSize: 1
+      DesiredCapacity: 1
+
+  AsgKeyPair:
+    Type: AWS::EC2::KeyPair
+    Properties:
+      KeyName: new-key-pair
 
   ECSLaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
@@ -84,62 +229,79 @@ Resources:
       LaunchTemplateData:
         ImageId: !Ref LatestECSOptimizedAMI
         InstanceType: t2.micro
-        IamInstanceProfile:
-          Arn: !GetAtt MyInstanceProfile.Arn
-        UserData: 
-          Fn::Base64: !Sub |
-            #!/bin/bash -xe
-            echo ECS_CLUSTER=${MyECSCluster} >> /etc/ecs/ecs.config
-            yum install -y aws-cfn-bootstrap
-            /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource EC2AutoScalingGroup --region ${AWS::Region}
-
-  ECSAutoScalingGroup:
-    Type: AWS::AutoScaling::AutoScalingGroup
+        IamInstanceProfile: 
+          Name: !Ref Ec2InstanceProfile
+        SecurityGroupIds:
+          - !GetAtt EcsSecurityGroup.GroupId
+        KeyName: !Ref AsgKeyPair
+        UserData: !Base64
+          'Fn::Join':
+            - ''
+            - - |
+                #!/bin/bash -xe
+              - echo ECS_CLUSTER=
+              - !Ref ECSCluster
+              - |2
+                 >> /etc/ecs/ecs.config
+                
+  ServiceScalingTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    DependsOn: AppServerService
     Properties:
-      MinSize: 1
-      MaxSize: 1
-      AvailabilityZones:
-        - us-east-1a
-        - us-east-1b
-        - us-east-1c
-      LaunchTemplate:
-        LaunchTemplateId: !Ref ECSLaunchTemplate
-        Version: !GetAtt ECSLaunchTemplate.LatestVersionNumber
-
-  EC2CapacityProvider:
-    Type: AWS::ECS::CapacityProvider
-    Properties:
-      AutoScalingGroupProvider:
-        AutoScalingGroupArn: !Ref ECSAutoScalingGroup
-
-  ClusterCPAssocation:
-    Type: AWS::ECS::ClusterCapacityProviderAssociations
-    Properties:
-      Cluster: !Ref MyECSCluster
-      CapacityProviders:
-        - !Ref EC2CapacityProvider
-      DefaultCapacityProviderStrategy:
-        - CapacityProvider: !Ref EC2CapacityProvider
-          Weight: 1
+      MaxCapacity: 1
+      MinCapacity: 1
+      ResourceId: !Join
+        - ''
+        - - service/
+          - !Ref ECSCluster
+          - / 
+          - !GetAtt
+            - AppServerService
+            - Name
+      RoleArn: !GetAtt
+        - AutoscalingRole
+        - Arn
+      ScalableDimension: 'ecs:service:DesiredCount'
+      ServiceNamespace: ecs
 
   AppServerService:
     Type: AWS::ECS::Service
+    DependsOn: ALBListener
     Properties: 
-      Cluster: !Ref MyECSCluster
-      TaskDefinition: !Ref AppServerTaskDefinition
+      Cluster: !Ref ECSCluster
       DesiredCount: 1
-      DeploymentConfiguration:
-        MaximumPercent: 100
-        MinimumHealthyPercent: 0
-      CapacityProviderStrategy:
-        - CapacityProvider: !Ref EC2CapacityProvider
-          Weight: 1
-      NetworkConfiguration:
-        AwsvpcConfiguration:
-          Subnets:
-            - !Ref Subnet
-          SecurityGroups:
-            - !Ref SecurityGroup
+      LoadBalancers:  
+        - ContainerName: AppServer
+          ContainerPort: '80'
+          TargetGroupArn: !Ref ECSTargetGroup
+      Role: !Ref ECSServiceRole
+      TaskDefinition: !Ref AppServerTaskDefinition
+
+  ECSServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ecs.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: ecs-service
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'elasticloadbalancing:DeregisterInstancesFromLoadBalancer'
+                  - 'elasticloadbalancing:DeregisterTargets'
+                  - 'elasticloadbalancing:Describe*'
+                  - 'elasticloadbalancing:RegisterInstancesFromLoadBalancer'
+                  - 'elasticloadbalancing:RegisterTargets'
+                  - 'ec2:Describe*'
+                  - 'ec2:AuthorizeSecurityGroupIngress*'
+                Resource: '*'
 
   AppServerEC2Role:
     Type: AWS::IAM::Role
@@ -150,7 +312,10 @@ Resources:
         Statement:
           - Effect: Allow
             Principal: 
-              Service: ecs-tasks.amazonaws.com
+              Service: 
+                - ecs-tasks.amazonaws.com
+                - ec2.amazonaws.com
+                - ecs.amazonaws.com
             Action: sts:AssumeRole
       Policies:
         - PolicyName: PostsTableAccessPolicy
@@ -176,8 +341,47 @@ Resources:
               - Effect: Allow
                 Action:
                   - ecs:*
+                  - logs:*
                 Resource: '*'
 
+  AutoscalingRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - application-autoscaling.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: service-autoscaling
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'application-autoscaling:*'
+                  - 'cloudwatch:DescribeAlarms'
+                  - 'cloudwatch:PutMetricAlarm'
+                  - 'ecs:DescribeServices'
+                  - 'ecs:UpdateService'
+                Resource: '*'
+
+
+  PostsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: PostsTable
+      AttributeDefinitions:
+        - AttributeName: User
+          AttributeType: S
+      KeySchema:
+        - AttributeName: User
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
 Outputs:
   PostTableARN:
     Description: The ARN of the new table
