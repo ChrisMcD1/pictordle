@@ -19,13 +19,29 @@ func main() {
 	fmt.Println("hello world")
 	httpPort := os.Getenv("PORT")
 
+	sess := session.Must(session.NewSession())
+	svc := dynamodb.New(sess)
+
 	router := gin.Default()
+
+	router.Use(svcProvider(svc))
 	router.GET("/", RootPath)
 	router.GET("/health-check", func(c *gin.Context) {
 		c.String(http.StatusOK, "Ok")
 	})
 
 	router.Run(":" + httpPort)
+
+}
+
+func svcProvider(svc *dynamodb.DynamoDB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Set("dynamoDB", svc)
+	}
+}
+
+func getSvc(c *gin.Context) *dynamodb.DynamoDB {
+	return c.MustGet("dynamoDB").(*dynamodb.DynamoDB)
 }
 
 type Post struct {
@@ -35,10 +51,6 @@ type Post struct {
 }
 
 func RootPath(c *gin.Context) {
-	sess := session.Must(session.NewSession())
-
-	svc := dynamodb.New(sess)
-
 	post := Post{
 		User:           "ME",
 		Day:            time.Now(),
@@ -56,7 +68,7 @@ func RootPath(c *gin.Context) {
 		TableName: aws.String(tableName),
 	}
 
-	_, err = svc.PutItem(input)
+	_, err = getSvc(c).PutItem(input)
 	if err != nil {
 		log.Fatalf("Got error called PutItem %s", err)
 	}
