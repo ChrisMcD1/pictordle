@@ -7,5 +7,5 @@ docker build ./app-server -t 101357155028.dkr.ecr.us-east-1.amazonaws.com/pictor
 docker push 101357155028.dkr.ecr.us-east-1.amazonaws.com/pictordle:latest
 
 # Deploy cloud formation stack. (Needs ECR to already be updated)
-aws cloudformation update-stack --stack-name Pictordle --template-body file://template.yaml --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM
+aws cloudformation deploy --stack-name Pictordle --template-file ./template.yaml --capabilities CAPABILITY_NAMED_IAM
 

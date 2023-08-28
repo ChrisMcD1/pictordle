@@ -8,7 +8,6 @@ COPY *.go ./
 
 RUN CGO_ENABLED=0 GOOS=linux go build -o /docker-gs-ping
 
-
 FROM gcr.io/distroless/base-debian11 AS release-stage
 
 WORKDIR /

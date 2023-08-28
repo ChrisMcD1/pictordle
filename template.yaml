@@ -54,15 +54,6 @@ Resources:
       VpcId: !Ref Vpc
       CidrBlock: 10.0.0.0/24
       MapPublicIpOnLaunch: true
-        #  NatEIPA:
-        #    Type: AWS::EC2::EIP
-        #    Properties:
-        #      Domain: vpc
-        #  NatGatewayA:
-        #    Type: AWS::EC2::NatGateway
-        #    Properties:
-        #      AllocationId: !GetAtt NatEIPA.AllocationId
-        #      SubnetId: !Ref SubnetA
 
   SubnetB:
     Type: AWS::EC2::Subnet
@@ -71,15 +62,6 @@ Resources:
       VpcId: !Ref Vpc
       CidrBlock: 10.0.1.0/24
       MapPublicIpOnLaunch: true
-        #  NatEIPB:
-        #    Type: AWS::EC2::EIP
-        #    Properties:
-        #      Domain: vpc
-        #  NatGatewayB:
-        #    Type: AWS::EC2::NatGateway
-        #    Properties:
-        #      AllocationId: !GetAtt NatEIPB.AllocationId
-        #      SubnetId: !Ref SubnetB
 
   EcsSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -136,11 +118,20 @@ Resources:
           Cpu: 512
           Memory: 512
           Essential: true
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: app-server
+              awslogs-region: us-east-1
+              awslogs-create-group: true
+              awslogs-stream-prefix: container
           Environment:
             - Name: PORT
               Value: 80
             - Name: POST_TABLE_NAME
               Value: !Ref PostsTable
+            - Name: AWS_REGION
+              Value: us-east-1
           PortMappings:
             - ContainerPort: 80
               HostPort: 80
@@ -171,7 +162,6 @@ Resources:
 
   ECSALBListenerRule:
     Type: AWS::ElasticLoadBalancingV2::ListenerRule
-    DependsOn: ALBListener
     Properties:
       Actions:
         - Type: forward
@@ -179,7 +169,7 @@ Resources:
       Conditions:
         - Field: path-pattern
           Values:
-            - /
+            - "*"
       ListenerArn: !Ref ALBListener
       Priority: 1
   ECSTargetGroup:
@@ -187,7 +177,7 @@ Resources:
     DependsOn: ECSALB
     Properties:
       HealthCheckIntervalSeconds: 10
-      HealthCheckPath: /
+      HealthCheckPath: /health-check
       HealthCheckProtocol: HTTP
       HealthCheckTimeoutSeconds: 5
       HealthyThresholdCount: 2
@@ -245,6 +235,22 @@ Resources:
               - |2
                  >> /etc/ecs/ecs.config
                 
+  ServiceScalingTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    DependsOn: AppServerService
+    Properties:
+      MaxCapacity: 1
+      MinCapacity: 1
+      ResourceId: !Join
+        - ''
+        - - service/
+          - !Ref ECSCluster
+          - / 
+          - !GetAtt AppServerService.Name
+      RoleARN: !GetAtt AutoscalingRole.Arn
+      ScalableDimension: 'ecs:service:DesiredCount'
+      ServiceNamespace: ecs
+
   AppServerService:
     Type: AWS::ECS::Service
     DependsOn: ALBListener
@@ -380,7 +386,7 @@ Resources:
   PostsTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: PostsTable
+      TableName: Posts
       AttributeDefinitions:
         - AttributeName: User
           AttributeType: S
@@ -394,3 +400,6 @@ Outputs:
   PostTableARN:
     Description: The ARN of the new table
     Value: !GetAtt PostsTable.Arn
+  ALBUrl:
+    Description: The public URL of the Load Balancer
+    Value: !GetAtt ECSALB.DNSName
